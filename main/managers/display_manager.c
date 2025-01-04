@@ -31,6 +31,8 @@
 #endif
 
 #ifdef CONFIG_JC3248W535EN_LCD
+#include "axs15231b/lv_port.h"
+#include "axs15231b/esp_bsp.h"
 #include "vendor/drivers/axs15231b.h"
 #endif
 
@@ -61,7 +63,7 @@ bool display_manager_init_success = false;
 #define DEFAULT_DISPLAY_TIMEOUT_MS 10000
 
 // Global variable to hold the configurable timeout duration
-static uint32_t display_timeout_ms = DEFAULT_DISPLAY_TIMEOUT_MS;
+uint32_t display_timeout_ms = DEFAULT_DISPLAY_TIMEOUT_MS;
 
 // Function to set the display timeout duration
 void set_display_timeout(uint32_t timeout_ms) {
@@ -319,10 +321,16 @@ void display_manager_init(void) {
 #endif //CONFIG_JC3248W535EN_LCD
 
 #if !defined(CONFIG_USE_7_INCHER) && !defined(CONFIG_JC3248W535EN_LCD)
+#ifdef CONFIG_IDF_TARGET_ESP32
+    static lv_color_t buf1[CONFIG_TFT_WIDTH * 5] __attribute__((aligned(4))); // We do this due to Dram Memory Constraints on ESP32 WROOM Modules
+    static lv_color_t buf2[CONFIG_TFT_WIDTH * 5] __attribute__((aligned(4))); // Any other devices like ESP32S3 Etc Should be able to handle the * 20 Double Buffer
+#else
     static lv_color_t buf1[CONFIG_TFT_WIDTH * 20] __attribute__((aligned(4)));
     static lv_color_t buf2[CONFIG_TFT_WIDTH * 20] __attribute__((aligned(4)));
+#endif
+
     static lv_disp_draw_buf_t disp_buf;
-    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, CONFIG_TFT_WIDTH * 20);
+    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, CONFIG_TFT_WIDTH * 5);
 
     /* Initialize the display */
     static lv_disp_drv_t disp_drv;
@@ -403,6 +411,10 @@ bool display_manager_register_view(View *view) {
 void display_manager_switch_view(View *view) {
     if (view == NULL) return;
 
+#ifdef CONFIG_JC3248W535EN_LCD
+    bsp_display_lock(0);
+#endif
+
     if (xSemaphoreTake(dm.mutex, pdMS_TO_TICKS(MUTEX_TIMEOUT_MS)) == pdTRUE) {
         printf("Switching view from %s to %s\n", 
             dm.current_view ? dm.current_view->name : "NULL", 
@@ -435,6 +447,10 @@ void display_manager_switch_view(View *view) {
     } else {
         printf("Failed to acquire mutex for switching view\n");
     }
+
+#ifdef CONFIG_JC3248W535EN_LCD
+    bsp_display_unlock();
+#endif
 }
 
 void display_manager_destroy_current_view(void) {
@@ -469,8 +485,6 @@ void set_backlight_brightness(uint8_t percentage) {
 
     gpio_set_level(CONFIG_LV_DISP_PIN_BCKL, percentage);
 }
-
-static const char* TAG = "DisplayManager";
 
 void hardware_input_task(void *pvParameters) {
     const TickType_t tick_interval = pdMS_TO_TICKS(10);
@@ -645,7 +659,7 @@ void processEvent()
 
 void lvgl_tick_task(void *arg) {
 
-    const TickType_t tick_interval = pdMS_TO_TICKS(5);
+    const TickType_t tick_interval = pdMS_TO_TICKS(10);
 
     int tick_increment;
     

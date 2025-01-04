@@ -1,6 +1,7 @@
 // command.c
 
 #include "core/commandline.h"
+#include "core/callbacks.h"
 #include "managers/wifi_manager.h"
 #include "managers/rgb_manager.h"
 #include "managers/ap_manager.h"
@@ -10,7 +11,6 @@
 #include <string.h>
 #include <vendor/dial_client.h>
 #include "managers/dial_manager.h"
-#include "core/callbacks.h"
 #include <esp_timer.h>
 #include "vendor/pcap.h"
 #include <sys/socket.h>
@@ -763,6 +763,63 @@ void handle_startwd(int argc, char **argv) {
 }
 
 
+void handle_scan_ports(int argc, char **argv) {
+    if (argc < 2) {
+        printf("Usage:\n");
+        printf("scanports local [-C/-A/start_port-end_port]\n");
+        printf("scanports [IP] [-C/-A/start_port-end_port]\n");
+        return;
+    }
+
+    bool is_local = strcmp(argv[1], "local") == 0;
+    const char* target_ip = NULL;
+    const char* port_arg = NULL;
+
+    // Parse arguments based on whether it's a local scan
+    if (is_local) {
+        if (argc < 3) {
+            printf("Missing port argument for local scan\n");
+            return;
+        }
+        port_arg = argv[2];
+    } else {
+        if (argc < 3) {
+            printf("Missing port argument for IP scan\n");
+            return;
+        }
+        target_ip = argv[1];
+        port_arg = argv[2];
+    }
+
+    if (is_local) {
+        wifi_manager_scan_subnet();
+        return;
+    }
+
+    host_result_t result;
+    if (strcmp(port_arg, "-C") == 0) {
+        scan_ports_on_host(target_ip, &result);
+        if (result.num_open_ports > 0) {
+            printf("Open ports on %s:\n", target_ip);
+            for (int i = 0; i < result.num_open_ports; i++) {
+                printf("Port %d\n", result.open_ports[i]);
+            }
+        }
+    } else {
+        int start_port, end_port;
+        if (strcmp(port_arg, "-A") == 0) {
+            start_port = 1;
+            end_port = 65535;
+        } else if (sscanf(port_arg, "%d-%d", &start_port, &end_port) != 2 || 
+                  start_port < 1 || end_port > 65535 || start_port > end_port) {
+            printf("Invalid port range\n");
+            return;
+        }
+        scan_ip_port_range(target_ip, start_port, end_port);
+    }
+}
+
+
 void handle_crash(int argc, char **argv)
 {
     int *ptr = NULL;
@@ -976,6 +1033,23 @@ void handle_help(int argc, char **argv) {
     TERMINAL_VIEW_ADD_TEXT("    Usage: blewardriving [-s]\n");
     TERMINAL_VIEW_ADD_TEXT("    Arguments:\n");
     TERMINAL_VIEW_ADD_TEXT("        -s  : Stop BLE wardriving\n\n");
+
+    printf("Port Scanner\n");
+    printf("    Description: Scan ports on local subnet or specific IP\n");
+    printf("    Usage: scanports local [-C/-A/start_port-end_port]\n");
+    printf("           scanports [IP] [-C/-A/start_port-end_port]\n");
+    printf("    Arguments:\n");
+    printf("        -C  : Scan common ports only\n");
+    printf("        -A  : Scan all ports (1-65535)\n");
+    printf("        start_port-end_port : Custom port range (e.g. 80-443)\n\n");
+    TERMINAL_VIEW_ADD_TEXT("Port Scanner\n");
+    TERMINAL_VIEW_ADD_TEXT("    Description: Scan ports on local subnet or specific IP\n");
+    TERMINAL_VIEW_ADD_TEXT("    Usage: scanports local [-C/-A/start_port-end_port]\n");
+    TERMINAL_VIEW_ADD_TEXT("           scanports [IP] [-C/-A/start_port-end_port]\n");
+    TERMINAL_VIEW_ADD_TEXT("    Arguments:\n");
+    TERMINAL_VIEW_ADD_TEXT("        -C  : Scan common ports only\n");
+    TERMINAL_VIEW_ADD_TEXT("        -A  : Scan all ports (1-65535)\n");
+    TERMINAL_VIEW_ADD_TEXT("        start_port-end_port : Custom port range (e.g. 80-443)\n\n");
 }
 
 void handle_capture(int argc, char **argv) {
@@ -1008,12 +1082,18 @@ void handle_gps_info(int argc, char **argv) {
         if (gps_info_task_handle != NULL) {
             vTaskDelete(gps_info_task_handle);
             gps_info_task_handle = NULL;
+            gps_manager_deinit(&g_gpsManager);
             printf("GPS info display stopped.\n");
             TERMINAL_VIEW_ADD_TEXT("GPS info display stopped.\n");
         }
     } else {
         if (gps_info_task_handle == NULL) {
             gps_manager_init(&g_gpsManager);
+            
+            // Wait a brief moment for GPS initialization
+            vTaskDelay(pdMS_TO_TICKS(100));
+            
+            // Start the info display task
             xTaskCreate(gps_info_display_task, "gps_info", 4096, NULL, 1, &gps_info_task_handle);
             printf("GPS info display started.\n");
             TERMINAL_VIEW_ADD_TEXT("GPS info display started.\n");
@@ -1059,6 +1139,30 @@ void handle_ble_wardriving(int argc, char **argv) {
 }
 #endif
 
+void handle_pineap_detection(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "-s") == 0) {
+        printf("Stopping PineAP detection...\n");
+        TERMINAL_VIEW_ADD_TEXT("Stopping PineAP detection...\n");
+        stop_pineap_detection();
+        wifi_manager_stop_monitor_mode();
+        pcap_file_close();
+        return;
+    }
+    // Open PCAP file for logging detections
+    int err = pcap_file_open("pineap_detection", PCAP_CAPTURE_WIFI);
+    if (err != ESP_OK) {
+        printf("Warning: Failed to open PCAP file for logging\n");
+        TERMINAL_VIEW_ADD_TEXT("Warning: Failed to open PCAP file for logging\n");
+    }
+    
+    // Start PineAP detection with channel hopping
+    start_pineap_detection();
+    wifi_manager_start_monitor_mode(wifi_pineap_detector_callback);
+    
+    printf("Monitoring for PineAP\n activity\n\n");
+    TERMINAL_VIEW_ADD_TEXT("Monitoring for PineAP\n activity\n\n");
+}
+
 void register_commands() {
     register_command("help", handle_help);
     register_command("scanap", cmd_wifi_scan_start);
@@ -1082,6 +1186,7 @@ void register_commands() {
     register_command("reboot", handle_reboot);
     register_command("startwd", handle_startwd);
     register_command("gpsinfo", handle_gps_info);
+    register_command("scanports", handle_scan_ports);
 #ifndef CONFIG_IDF_TARGET_ESP32S2
     register_command("blescan", handle_ble_scan_cmd);
     register_command("blewardriving", handle_ble_wardriving);
@@ -1089,6 +1194,7 @@ void register_commands() {
 #ifdef DEBUG
     register_command("crash", handle_crash); // For Debugging
 #endif
+    register_command("pineap", handle_pineap_detection);
     printf("Registered Commands\n");
     TERMINAL_VIEW_ADD_TEXT("Registered Commands\n");
 }

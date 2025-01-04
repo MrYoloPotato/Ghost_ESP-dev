@@ -33,7 +33,6 @@ static bool mdns_freed = false;
 
 // Forward declarations
 static esp_err_t http_get_handler(httpd_req_t* req);
-static esp_err_t api_logs_handler(httpd_req_t* req);
 static esp_err_t api_clear_logs_handler(httpd_req_t* req);
 static esp_err_t api_settings_handler(httpd_req_t* req);
 static esp_err_t api_command_handler(httpd_req_t *req);
@@ -685,13 +684,6 @@ esp_err_t ap_manager_init(void) {
         .user_ctx  = NULL
     };
 
-    httpd_uri_t uri_post_logs = {
-        .uri       = "/api/logs",
-        .method    = HTTP_GET,
-        .handler   = api_logs_handler,
-        .user_ctx  = NULL
-    };
-
 
     httpd_uri_t uri_post_settings = {
         .uri       = "/api/settings",
@@ -760,11 +752,6 @@ esp_err_t ap_manager_init(void) {
     }
 
     ret = httpd_register_uri_handler(server, &uri_sd_card_get);
-        if (ret != ESP_OK) {
-        printf("Error registering URI\n");
-    }
-
-    ret = httpd_register_uri_handler(server, &uri_post_logs);
         if (ret != ESP_OK) {
         printf("Error registering URI\n");
     }
@@ -890,13 +877,6 @@ esp_err_t ap_manager_start_services() {
         .user_ctx  = NULL
     };
 
-    httpd_uri_t uri_post_logs = {
-        .uri       = "/api/logs",
-        .method    = HTTP_GET,
-        .handler   = api_logs_handler,
-        .user_ctx  = NULL
-    };
-
 
     httpd_uri_t uri_post_settings = {
         .uri       = "/api/settings",
@@ -966,11 +946,6 @@ esp_err_t ap_manager_start_services() {
     ret = httpd_register_uri_handler(server, &uri_sd_card_get);
         if (ret != ESP_OK) {
         printf("Error registering URI\n");
-    }
-
-    ret = httpd_register_uri_handler(server, &uri_post_logs);
-        if (ret != ESP_OK) {
-        printf("Error registering URI \n");
     }
 
     ret = httpd_register_uri_handler(server, &uri_get_settings);
@@ -1094,37 +1069,6 @@ static esp_err_t api_command_handler(httpd_req_t *req)
     httpd_resp_send(req, "Command executed", strlen("Command executed"));
 
     cJSON_Delete(json);
-    return ESP_OK;
-}
-
-
-static esp_err_t api_logs_handler(httpd_req_t* req) {
-    httpd_resp_set_type(req, "text/event-stream");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_set_hdr(req, "Connection", "keep-alive");
-
-    if (log_buffer_index > 0) {
-        char sse_event[2046];
-        size_t log_offset = 0;
-
-        while (log_offset < log_buffer_index) {
-            size_t chunk_size = log_buffer_index - log_offset;
-            if (chunk_size > 2046) {
-                chunk_size = 2046;
-            }
-
-            snprintf(sse_event, sizeof(sse_event), "data: %.*s\n\n", (int)chunk_size, log_buffer + log_offset);
-            httpd_resp_sendstr_chunk(req, sse_event);
-
-            log_offset += chunk_size;
-        }
-
-        log_buffer_index = 0;
-    } else {
-        httpd_resp_sendstr_chunk(req, "data: [No new logs]\n\n");
-    }
-
-    httpd_resp_sendstr_chunk(req, NULL);
     return ESP_OK;
 }
 
@@ -1274,6 +1218,11 @@ static esp_err_t api_settings_handler(httpd_req_t* req) {
         settings_set_accent_color_str(settings, hex_accent_color_str->valuestring);
     }
 
+    cJSON* rts_enabled_bool = cJSON_GetObjectItem(root, "rts_enabled");
+    if (rts_enabled_bool) {
+        settings_set_rts_enabled(settings, rts_enabled_bool->valueint != 0);
+    }
+
     cJSON* gps_rx_pin = cJSON_GetObjectItem(root, "gps_rx_pin");
     if (gps_rx_pin) {
         settings_set_gps_rx_pin(settings, gps_rx_pin->valueint);
@@ -1332,6 +1281,7 @@ static esp_err_t api_settings_get_handler(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "timezone_str", settings_get_timezone_str(settings));
     cJSON_AddNumberToObject(root, "gps_rx_pin", settings_get_gps_rx_pin(settings));
     cJSON_AddNumberToObject(root, "display_timeout", settings_get_display_timeout(settings));
+    cJSON_AddNumberToObject(root, "rts_enabled_bool", settings_get_rts_enabled(settings));
     
     esp_netif_ip_info_t ip_info;
     esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");

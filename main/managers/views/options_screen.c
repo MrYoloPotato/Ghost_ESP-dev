@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 #include "core/serial_manager.h"
 #include "esp_wifi_types.h"
+#include "esp_timer.h"
 #include <stdio.h>
 
 EOptionsMenuType SelectedMenuType = OT_Wifi;
@@ -14,6 +15,7 @@ int selected_item_index = 0;
 lv_obj_t *root = NULL;
 lv_obj_t *menu_container = NULL;
 int num_items = 0;
+unsigned long createdTimeInMs = 0;
 
 static void select_menu_item(int index); // Forward Declaration
 
@@ -50,6 +52,8 @@ static const char *wifi_options[] = {
     "TV Cast (Dial Connect)",
     "Power Printer",
     "TP Link Test",
+    "PineAP Detection",
+    "Scan Open Ports",
     "Go Back",
     NULL
 };
@@ -80,25 +84,27 @@ static const char *settings_options[] = {
     NULL
 };
 
-
 void options_menu_create() {
     int screen_width = LV_HOR_RES;
     int screen_height = LV_VER_RES;
-
 
     display_manager_fill_screen(lv_color_black());
 
 
     root = lv_obj_create(lv_scr_act());
     options_menu_view.root = root;
-    lv_obj_set_size(root, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_size(root, screen_width, screen_height);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
     lv_obj_set_style_pad_all(root, 0, 0);
     lv_obj_align(root, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_set_scrollbar_mode(root, LV_SCROLLBAR_MODE_OFF);
 
+#ifdef CONFIG_JC3248W535EN_LCD
+    screen_width -= 50;
+#endif
     
     lv_obj_t *list = lv_list_create(root);
+
     lv_obj_set_size(list, LV_HOR_RES, LV_VER_RES - 17);
     lv_obj_align(list, LV_ALIGN_TOP_LEFT, 0, 17);
     lv_obj_set_style_pad_all(list, 0, 0);
@@ -167,6 +173,8 @@ void options_menu_create() {
     select_menu_item(0);
 
     display_manager_add_status_bar(options_menu_type_to_string(SelectedMenuType));
+
+    createdTimeInMs = (unsigned long) (esp_timer_get_time() / 1000ULL);
 }
 
 static void select_menu_item(int index) {
@@ -211,6 +219,11 @@ static void select_menu_item(int index) {
 }
 
 void handle_hardware_button_press_options(InputEvent *event) {
+#ifdef CONFIG_JC3248W535EN_LCD
+    // lvgl on the JC3248W535EN doesn't require custom input handling
+    return;
+#endif
+
     if (event->type == INPUT_TYPE_TOUCH) {
         lv_indev_data_t *data = &event->data.touch_data;
 
@@ -221,11 +234,28 @@ void handle_hardware_button_press_options(InputEvent *event) {
             select_menu_item(selected_item_index - 1);
         } else if (data->point.y > 2 * third_height) {
             select_menu_item(selected_item_index + 1);
-        } else {
-            const char *selected_option = (const char *)lv_label_get_text(
-                lv_obj_get_child(lv_obj_get_child(menu_container, selected_item_index), 0)
-            );
-            option_event_cb(selected_option);
+        } else { 
+            // Get the selected menu item safely
+            lv_obj_t *selected_obj = lv_obj_get_child(menu_container, selected_item_index);
+            if (!selected_obj) {
+                printf("Error: Could not get selected menu item\n");
+                return;
+            }
+
+            // Get the label object safely
+            lv_obj_t *label_obj = lv_obj_get_child(selected_obj, 0);
+            if (!label_obj) {
+                printf("Error: Could not get label object\n");
+                return;
+            }
+
+            const char *selected_option = lv_label_get_text(label_obj);
+            if (!selected_option) {
+                printf("Error: Could not get label text\n");
+                return;
+            }
+
+            handle_option_directly(selected_option);
         }
     } else if (event->type == INPUT_TYPE_JOYSTICK) {
         int button = event->data.joystick_index;
@@ -235,15 +265,38 @@ void handle_hardware_button_press_options(InputEvent *event) {
         } else if (button == 4) {
             select_menu_item(selected_item_index + 1);
         } else if (button == 1) {
-            const char *selected_option = (const char *)lv_label_get_text(
-                lv_obj_get_child(lv_obj_get_child(menu_container, selected_item_index), 0)
-            );
-            option_event_cb(selected_option);
+            // Get the selected menu item safely
+            lv_obj_t *selected_obj = lv_obj_get_child(menu_container, selected_item_index);
+            if (!selected_obj) {
+                printf("Error: Could not get selected menu item\n");
+                return;
+            }
+
+            // Get the label object safely
+            lv_obj_t *label_obj = lv_obj_get_child(selected_obj, 0);
+            if (!label_obj) {
+                printf("Error: Could not get label object\n");
+                return;
+            }
+
+            const char *selected_option = lv_label_get_text(label_obj);
+            if (!selected_option) {
+                printf("Error: Could not get label text\n");
+                return;
+            }
+
+            handle_option_directly(selected_option);
         }
     }
 }
 
-void option_event_cb(const char* Selected_Option) {
+void option_event_cb(lv_event_t * e) {
+    // when moving to the options screen ignore any click events for 1s
+    if ((esp_timer_get_time() / 1000ULL) - createdTimeInMs <= 500) {
+        return;
+    }
+
+    const char* Selected_Option = (const char*)lv_event_get_user_data(e);
 
     if (strcmp(Selected_Option, "Scan Access Points") == 0) {
         display_manager_switch_view(&terminal_view);
@@ -420,7 +473,14 @@ if (strcmp(Selected_Option, "Find Flippers") == 0) {
 
 
     if (strcmp(Selected_Option, "Go Back") == 0) {
+        // Clear any state before switching views
+        selected_item_index = 0;
+        num_items = 0;
+        menu_container = NULL;
+        root = NULL;
+        
         display_manager_switch_view(&main_menu_view);
+        return; // Important: return immediately after initiating view switch
     } else {
         printf("Option selected: %s\n", Selected_Option);
     }
@@ -472,13 +532,42 @@ if (strcmp(Selected_Option, "Find Flippers") == 0) {
     error_popup_create("Device Does not Support Bluetooth...");
 #endif
     }
+
+    if (strcmp(Selected_Option, "PineAP Detection") == 0) {
+        display_manager_switch_view(&terminal_view);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        simulateCommand("pineap");
+    }
+
+    if (strcmp(Selected_Option, "Scan Open Ports") == 0) {
+        display_manager_switch_view(&terminal_view);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        simulateCommand("ScanLocPort -C L"); // Needs a random 3rd parameter to bypass checks
+    }
 }
 
-void options_menu_destroy() {
+void handle_option_directly(const char* Selected_Option) {
+    lv_event_t e;
+    e.user_data = (void*)Selected_Option;
+    option_event_cb(&e);
+}
+
+void options_menu_destroy(void) {
     if (options_menu_view.root) {
+        // First clean up any child objects
+        if (menu_container) {
+            lv_obj_clean(menu_container);
+            menu_container = NULL;
+        }
+        
+        // Then clean up the root object
         lv_obj_clean(options_menu_view.root);
         lv_obj_del(options_menu_view.root);
         options_menu_view.root = NULL;
+        
+        // Reset state
+        selected_item_index = 0;
+        num_items = 0;
     }
 }
 
