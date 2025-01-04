@@ -112,7 +112,7 @@ jobs:
           path: ${{ matrix.target.zip_name }}
 
   upload_all:
-    name: Upload All to Cloudflare R2 and GitHub Release
+    name: Upload All to GitHub Release
     needs: build
     runs-on: ubuntu-latest
 
@@ -138,37 +138,6 @@ jobs:
       - name: Install rclone
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
-
-      - name: Configure rclone for Cloudflare R2
-        env:
-          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
-          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
-        run: |
-          mkdir -p ~/.config/rclone
-          cat <<EOF > ~/.config/rclone/rclone.conf
-          [cloudflare_r2]
-          type = s3
-          provider = Cloudflare
-          access_key_id = $R2_ACCESS_KEY
-          secret_access_key = $R2_SECRET_KEY
-          endpoint = https://fb5f7d31bedfe4f3538ddfa6db491962.r2.cloudflarestorage.com
-          EOF
-
-      - name: Upload All Artifacts to Cloudflare R2
-        env:
-          R2_BUCKET: "spooksapi"
-          R2_PATH: "GhostESPBins"
-        run: |
-          echo "Uploading artifacts to Cloudflare R2..."
-          for file in flat_artifacts/*; do
-            if [ -f "$file" ]; then
-              echo "Uploading $file..."
-              rclone copy "$file" "cloudflare_r2:${R2_BUCKET}/${R2_PATH}" --progress --s3-no-check-bucket
-            else
-              echo "Skipping $file as it is not a valid file."
-            fi
-          done
-          echo "All artifacts uploaded successfully."
 
       - name: Get the Latest Release ID (Including Pre-releases)
         id: get_release
@@ -199,26 +168,3 @@ jobs:
               echo "Skipping $file as it is either empty or not a valid file."
             fi
           done
-
-      - name: Notify Discord of Successful Upload
-        if: success()
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
-          payload=$(cat <<EOF
-          {
-            "embeds": [
-              {
-                "title": "🎉 New Build Artifacts Uploaded!",
-                "description": "All build artifacts have been successfully uploaded to Cloudflare R2 and GitHub Release.",
-                "color": 5814783,
-                "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-              }
-            ]
-          }
-          EOF
-          )
-          curl -X POST \
-            -H "Content-Type: application/json" \
-            -d "$payload" \
-            "$DISCORD_WEBHOOK_URL"
